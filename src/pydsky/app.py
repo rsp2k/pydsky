@@ -256,6 +256,8 @@ class DSKY(QMainWindow):
             el.move(305, 170+i*55)
             perms.append(el)
 
+        return perms
+
     def _create_button(self, x, y, keycode):
         b = Button(self)
         b.setFixedSize(63, 63)
