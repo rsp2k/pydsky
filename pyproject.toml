@@ -12,6 +12,11 @@ dependencies = [
     "qtpy>=2.0",
 ]
 
+[project.optional-dependencies]
+pyqt5 = ["PyQt5>=5.15"]
+pyqt6 = ["PyQt6>=6.0"]
+pyside6 = ["PySide6>=6.0"]
+
 [project.scripts]
 pydsky = "pydsky.app:main"
 

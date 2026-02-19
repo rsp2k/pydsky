@@ -150,11 +150,10 @@ class DSKY(QMainWindow):
             self._noun[1].set_on(vnflash)
 
     def _setup_ui(self):
-        self.setObjectName('#DSKY')
+        self.setObjectName('DSKY')
         self.setWindowFlags(Qt.WindowType.Window)
         self.setFixedSize(500,580)
         self.setStyleSheet('DSKY{background-image: url(:/resources/dsky.png);}')
-        self.setWindowTitle('pyDSKY')
 
         el_pix = QPixmap(':/resources/el.png')
         lamp_pix = QPixmap(':/resources/lamps.png')
@@ -218,8 +217,6 @@ class DSKY(QMainWindow):
         self._alt.move(134, 249)
         self._vel = Lamp(self, lamp_pix, 79, 228, 78, 37, False)
         self._vel.move(134, 292)
-
-        self.show()
 
     def _create_reg(self, el_pix, col, row):
         digits = []
