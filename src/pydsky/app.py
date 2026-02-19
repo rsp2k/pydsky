@@ -5,11 +5,11 @@ from qtpy.QtGui import QPainter, QPixmap
 from qtpy.QtCore import Qt, QTimer, QByteArray
 from qtpy.QtNetwork import QTcpSocket
 
-import resources
-from lamp import Lamp
-from seven_segment import SevenSegment
-from sign import Sign
-from button import Button
+from . import resources
+from .lamp import Lamp
+from .seven_segment import SevenSegment
+from .sign import Sign
+from .button import Button
 
 RECONNECT_MS = 100
 
@@ -36,9 +36,8 @@ class DSKY(QMainWindow):
 
     def _read_data(self):
         while not self._socket.atEnd():
-            data = self._socket.read(1024)
-            for raw_byte in data:
-                byte = ord(raw_byte)
+            data = bytes(self._socket.readAll())
+            for byte in data:
 
                 if (byte & 0xC0) == 0:
                     self._packet_idx = 0
@@ -347,9 +346,13 @@ class DSKY(QMainWindow):
         else:
             but.release()
 
-if __name__ == '__main__':
+def main():
     app = QApplication(sys.argv)
     window = DSKY(None)
     window.show()
     app.exec()
+
+
+if __name__ == '__main__':
+    main()
 
