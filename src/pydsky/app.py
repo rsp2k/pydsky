@@ -25,14 +25,22 @@ class DSKY(QMainWindow):
 
         self._socket = QTcpSocket(self)
         self._socket.readyRead.connect(self._read_data)
-        self._socket.disconnected.connect(self._connect_to_vagc)
+        self._socket.disconnected.connect(self._schedule_reconnect)
+        self._socket.errorOccurred.connect(self._on_socket_error)
         self._connect_to_vagc()
 
+    def _schedule_reconnect(self):
+        QTimer.singleShot(RECONNECT_MS, self._connect_to_vagc)
+
+    def _on_socket_error(self, error):
+        if error != QTcpSocket.ConnectionRefusedError:
+            return
+        self._schedule_reconnect()
+
     def _connect_to_vagc(self):
+        if self._socket.state() != QTcpSocket.UnconnectedState:
+            return
         self._socket.connectToHost('localhost', 19697)
-        connected = self._socket.waitForConnected(RECONNECT_MS)
-        if not connected:
-            QTimer.singleShot(RECONNECT_MS, self._connect_to_vagc)
 
     def _read_data(self):
         while not self._socket.atEnd():
