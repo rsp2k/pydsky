@@ -268,13 +268,18 @@ class DSKY(QMainWindow):
             b.released.connect(lambda: self._send_proceed(0))
         else:
             b.pressed.connect(lambda k=keycode:
-                self._socket.write(self._form_packet(0o15, k)))
+                self._send_key(k))
 
         return b
 
+    def _send_key(self, keycode):
+        if self._socket.state() == QTcpSocket.ConnectedState:
+            self._socket.write(self._form_packet(0o15, keycode))
+
     def _send_proceed(self, p):
-        self._socket.write(self._form_packet(0o432, 0o20000) +
-                           self._form_packet(0o32, 0o20000 if p else 0))
+        if self._socket.state() == QTcpSocket.ConnectedState:
+            self._socket.write(self._form_packet(0o432, 0o20000) +
+                               self._form_packet(0o32, 0o20000 if p else 0))
 
     def paintEvent(self, event):
         opt = QStyleOption()
