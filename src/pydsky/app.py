@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import sys
-from qtpy.QtWidgets import QApplication, QMainWindow, QStyleOption, QStyle, QPushButton
+from qtpy.QtWidgets import QApplication, QMainWindow, QStyleOption, QStyle
 from qtpy.QtGui import QPainter, QPixmap
-from qtpy.QtCore import Qt, QTimer, QByteArray
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtNetwork import QTcpSocket
 
 from . import resources
@@ -33,12 +33,12 @@ class DSKY(QMainWindow):
         QTimer.singleShot(RECONNECT_MS, self._connect_to_vagc)
 
     def _on_socket_error(self, error):
-        if error != QTcpSocket.ConnectionRefusedError:
+        if error != QTcpSocket.SocketError.ConnectionRefusedError:
             return
         self._schedule_reconnect()
 
     def _connect_to_vagc(self):
-        if self._socket.state() != QTcpSocket.UnconnectedState:
+        if self._socket.state() != QTcpSocket.SocketState.UnconnectedState:
             return
         self._socket.connectToHost('localhost', 19697)
 
@@ -65,9 +65,11 @@ class DSKY(QMainWindow):
         packet[2] = 0x80 | ((value >> 6) & 0x3F)
         packet[3] = 0xc0 | (value & 0x3F)
 
-        return QByteArray(bytes(packet))
+        return bytes(packet)
 
     def _handle_packet(self, packet):
+        if (packet[0] & 0xC0) != 0x00:
+            return
         if (packet[1] & 0xC0) != 0x40:
             return
         if (packet[2] & 0xC0) != 0x80:
@@ -141,7 +143,7 @@ class DSKY(QMainWindow):
             self._restart.set_on((value >> 7) & 0o1)
             self._stby.set_on((value >> 8) & 0o1)
 
-            vnflash = not ((value >> 5) & 0o1)
+            vnflash = ((value >> 5) & 0o1) ^ 1
             self._verb[0].set_on(vnflash)
             self._verb[1].set_on(vnflash)
             self._noun[0].set_on(vnflash)
@@ -149,7 +151,7 @@ class DSKY(QMainWindow):
 
     def _setup_ui(self):
         self.setObjectName('#DSKY')
-        self.setWindowFlags(Qt.Window)
+        self.setWindowFlags(Qt.WindowType.Window)
         self.setFixedSize(500,580)
         self.setStyleSheet('DSKY{background-image: url(:/resources/dsky.png);}')
         self.setWindowTitle('pyDSKY')
@@ -283,11 +285,11 @@ class DSKY(QMainWindow):
         return b
 
     def _send_key(self, keycode):
-        if self._socket.state() == QTcpSocket.ConnectedState:
+        if self._socket.state() == QTcpSocket.SocketState.ConnectedState:
             self._socket.write(self._form_packet(0o15, keycode))
 
     def _send_proceed(self, p):
-        if self._socket.state() == QTcpSocket.ConnectedState:
+        if self._socket.state() == QTcpSocket.SocketState.ConnectedState:
             self._socket.write(self._form_packet(0o432, 0o20000) +
                                self._form_packet(0o32, 0o20000 if p else 0))
 
@@ -295,7 +297,7 @@ class DSKY(QMainWindow):
         opt = QStyleOption()
         opt.initFrom(self)
         p = QPainter(self)
-        self.style().drawPrimitive(QStyle.PE_Widget, opt, p, self)
+        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, opt, p, self)
 
     def keyPressEvent(self, event):
         if event.isAutoRepeat():
