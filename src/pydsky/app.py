@@ -301,8 +301,6 @@ class DSKY(QMainWindow):
             but = self._but_verb
         elif key == Qt.Key.Key_N:
             but = self._but_noun
-        elif key == Qt.Key.Key_V:
-            but = self._but_verb
         elif key == Qt.Key.Key_Plus or key == Qt.Key.Key_Equal:
             but = self._but_plus
         elif key == Qt.Key.Key_Minus:
