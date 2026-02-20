@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
+import argparse
 import sys
-from qtpy.QtWidgets import QApplication, QMainWindow, QStyleOption, QStyle
+from qtpy.QtWidgets import (
+    QApplication, QMainWindow, QStyleOption, QStyle,
+    QFrame, QVBoxLayout, QLabel,
+)
 from qtpy.QtGui import QPainter, QPixmap
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtNetwork import QTcpSocket
@@ -12,22 +16,69 @@ from .sign import Sign
 from .button import Button
 
 RECONNECT_MS = 100
+RELAY_PORT = 19900
+
+VEHICLE_COLORS = {
+    'CM': '#5588AA',
+    'LM': '#CC9933',
+}
+
+KEY_NAMES = {
+    0b10001: 'VERB', 0b11111: 'NOUN', 0b11010: '+', 0b11011: '-',
+    0b10000: '0', 0b00001: '1', 0b00010: '2', 0b00011: '3',
+    0b00100: '4', 0b00101: '5', 0b00110: '6', 0b00111: '7',
+    0b01000: '8', 0b01001: '9', 0b11110: 'CLR', 0b11001: 'KEY REL',
+    0b11100: 'ENTR', 0b10010: 'RSET',
+}
 
 class DSKY(QMainWindow):
-    def __init__(self, parent):
+    def __init__(self, parent, host='localhost', port=19697, vehicle=None, software=None):
         super().__init__(parent)
-        self.setWindowTitle('pyDSKY')
+
+        self._host = host
+        self._port = port
+
+        if vehicle is None:
+            self._vehicle = 'LM' if port == 19797 else 'CM'
+        else:
+            self._vehicle = vehicle.upper()
+
+        if software is None:
+            self._software = 'Luminary099' if self._vehicle == 'LM' else 'Colossus249'
+        else:
+            self._software = software
+
+        self._accent = VEHICLE_COLORS.get(self._vehicle, '#5588AA')
+        self.setWindowTitle(f'pyDSKY \u2014 {self._vehicle} ({self._software})')
+
+        self._packets_rx = 0
+        self._packets_tx = 0
+        self._last_key_name = '\u2014'
+        self._upl_act_on = False
+        self._com_act_on = False
+        self._is_connected = False
 
         self._setup_ui()
+        self._build_side_panel()
 
         self._packet = [0, 0, 0, 0]
         self._packet_idx = 0
 
         self._socket = QTcpSocket(self)
         self._socket.readyRead.connect(self._read_data)
-        self._socket.disconnected.connect(self._schedule_reconnect)
+        self._socket.connected.connect(self._on_connected)
+        self._socket.disconnected.connect(self._on_disconnected)
         self._socket.errorOccurred.connect(self._on_socket_error)
         self._connect_to_vagc()
+
+    def _on_connected(self):
+        self._is_connected = True
+        self._update_conn_status()
+
+    def _on_disconnected(self):
+        self._is_connected = False
+        self._update_conn_status()
+        self._schedule_reconnect()
 
     def _schedule_reconnect(self):
         QTimer.singleShot(RECONNECT_MS, self._connect_to_vagc)
@@ -40,7 +91,7 @@ class DSKY(QMainWindow):
     def _connect_to_vagc(self):
         if self._socket.state() != QTcpSocket.SocketState.UnconnectedState:
             return
-        self._socket.connectToHost('localhost', 19697)
+        self._socket.connectToHost(self._host, self._port)
 
     def _read_data(self):
         while not self._socket.atEnd():
@@ -76,6 +127,9 @@ class DSKY(QMainWindow):
             return
         if (packet[3] & 0xC0) != 0xC0:
             return
+
+        self._packets_rx += 1
+        self._update_packet_counts()
 
         channel = ((packet[0] & 0x1F) << 3) | ((packet[1] >> 3) & 0x07)
         value = ((packet[1] << 12) & 0x7000) | ((packet[2] << 6) & 0x0FC0) | (packet[3] & 0x003F);
@@ -133,8 +187,11 @@ class DSKY(QMainWindow):
                 self._prog_alarm.set_on((relay_value >> 8) & 0o1)
 
         elif channel == 0o11:
+            self._upl_act_on = bool((value >> 2) & 0o1)
+            self._com_act_on = bool((value >> 1) & 0o1)
             self._upl_act.set_on((value >> 2) & 0o1)
             self._com_act.set_on((value >> 1) & 0o1)
+            self._update_indicators()
 
         elif channel == 0o163:
             self._temp.set_on((value >> 3) & 0o1)
@@ -152,8 +209,12 @@ class DSKY(QMainWindow):
     def _setup_ui(self):
         self.setObjectName('DSKY')
         self.setWindowFlags(Qt.WindowType.Window)
-        self.setFixedSize(500,580)
-        self.setStyleSheet('DSKY{background-image: url(:/resources/dsky.png);}')
+        self.setFixedSize(700, 580)
+        self.setStyleSheet(
+            'DSKY{background-color: #2a2a30;'
+            'background-image: url(:/resources/dsky.png);'
+            'background-repeat: no-repeat;}'
+        )
 
         el_pix = QPixmap(':/resources/el.png')
         lamp_pix = QPixmap(':/resources/lamps.png')
@@ -281,14 +342,149 @@ class DSKY(QMainWindow):
 
         return b
 
+    # ── side panel ───────────────────────────────────────────────
+
+    def _build_side_panel(self):
+        accent = self._accent
+
+        panel = QFrame(self)
+        panel.setObjectName('side_panel')
+        panel.setGeometry(500, 0, 200, 580)
+        panel.setStyleSheet(
+            f'QFrame#side_panel{{'
+            f'background-color:#2a2a30;'
+            f'border-left:4px solid {accent};'
+            f'}}'
+        )
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 16, 8, 8)
+        layout.setSpacing(2)
+
+        # Vehicle designation
+        lbl = QLabel(self._vehicle)
+        lbl.setStyleSheet(f'color:{accent}; font-size:18px; font-weight:bold;')
+        layout.addWidget(lbl)
+
+        # Software name — split "Colossus249" → "COLOSSUS 249"
+        sw = self._software
+        for i, c in enumerate(sw):
+            if c.isdigit():
+                sw = f'{sw[:i]} {sw[i:]}'
+                break
+        lbl = QLabel(sw.upper())
+        lbl.setStyleSheet('color:#999; font-size:11px;')
+        layout.addWidget(lbl)
+
+        layout.addSpacing(6)
+        layout.addWidget(self._make_divider())
+        layout.addSpacing(6)
+
+        # Connection
+        layout.addWidget(self._make_section_header('CONNECTION'))
+        self._lbl_conn = QLabel('\u25CB  DISCONNECTED')
+        self._lbl_conn.setStyleSheet('color:#CC6666; font-size:11px; font-family:monospace;')
+        layout.addWidget(self._lbl_conn)
+        lbl = QLabel(f'{self._host}:{self._port}')
+        lbl.setStyleSheet('color:#777; font-size:10px; font-family:monospace;')
+        layout.addWidget(lbl)
+
+        layout.addSpacing(6)
+        layout.addWidget(self._make_divider())
+        layout.addSpacing(6)
+
+        # Packets
+        layout.addWidget(self._make_section_header('PACKETS'))
+        self._lbl_rx = QLabel('RX:  0')
+        self._lbl_rx.setStyleSheet('color:#DDD; font-size:11px; font-family:monospace;')
+        layout.addWidget(self._lbl_rx)
+        self._lbl_tx = QLabel('TX:  0')
+        self._lbl_tx.setStyleSheet('color:#DDD; font-size:11px; font-family:monospace;')
+        layout.addWidget(self._lbl_tx)
+
+        layout.addSpacing(6)
+        layout.addWidget(self._make_divider())
+        layout.addSpacing(6)
+
+        # Uplink
+        layout.addWidget(self._make_section_header('UPLINK'))
+        self._lbl_last_key = QLabel('Last:  \u2014')
+        self._lbl_last_key.setStyleSheet('color:#DDD; font-size:11px; font-family:monospace;')
+        layout.addWidget(self._lbl_last_key)
+        self._lbl_upl = QLabel('UPL ACT:  \u25CB')
+        self._lbl_upl.setStyleSheet('color:#777; font-size:11px; font-family:monospace;')
+        layout.addWidget(self._lbl_upl)
+        self._lbl_com = QLabel('COM ACT:  \u25CB')
+        self._lbl_com.setStyleSheet('color:#777; font-size:11px; font-family:monospace;')
+        layout.addWidget(self._lbl_com)
+
+        layout.addSpacing(6)
+        layout.addWidget(self._make_divider())
+        layout.addSpacing(6)
+
+        # Relay
+        layout.addWidget(self._make_section_header('RELAY'))
+        relay_text = 'via RELAY :19900' if self._port == RELAY_PORT else 'DIRECT'
+        lbl = QLabel(relay_text)
+        lbl.setStyleSheet('color:#DDD; font-size:11px; font-family:monospace;')
+        layout.addWidget(lbl)
+
+        layout.addStretch()
+
+    def _make_section_header(self, text):
+        lbl = QLabel(text)
+        lbl.setStyleSheet('color:#777; font-size:9px; font-weight:bold; letter-spacing:1px;')
+        return lbl
+
+    def _make_divider(self):
+        div = QFrame()
+        div.setFixedHeight(1)
+        div.setStyleSheet('background-color:#444;')
+        return div
+
+    def _update_conn_status(self):
+        if self._is_connected:
+            self._lbl_conn.setText('\u25CF  CONNECTED')
+            self._lbl_conn.setStyleSheet('color:#66CC66; font-size:11px; font-family:monospace;')
+        else:
+            self._lbl_conn.setText('\u25CB  DISCONNECTED')
+            self._lbl_conn.setStyleSheet('color:#CC6666; font-size:11px; font-family:monospace;')
+
+    def _update_packet_counts(self):
+        self._lbl_rx.setText(f'RX:  {self._packets_rx:,}')
+        self._lbl_tx.setText(f'TX:  {self._packets_tx:,}')
+
+    def _update_indicators(self):
+        if self._upl_act_on:
+            self._lbl_upl.setText('UPL ACT:  \u25CF')
+            self._lbl_upl.setStyleSheet('color:#DDD; font-size:11px; font-family:monospace;')
+        else:
+            self._lbl_upl.setText('UPL ACT:  \u25CB')
+            self._lbl_upl.setStyleSheet('color:#777; font-size:11px; font-family:monospace;')
+        if self._com_act_on:
+            self._lbl_com.setText('COM ACT:  \u25CF')
+            self._lbl_com.setStyleSheet('color:#DDD; font-size:11px; font-family:monospace;')
+        else:
+            self._lbl_com.setText('COM ACT:  \u25CB')
+            self._lbl_com.setStyleSheet('color:#777; font-size:11px; font-family:monospace;')
+
+    # ── key transmission ──────────────────────────────────────
+
     def _send_key(self, keycode):
         if self._socket.state() == QTcpSocket.SocketState.ConnectedState:
             self._socket.write(self._form_packet(0o15, keycode))
+            self._packets_tx += 1
+            self._update_packet_counts()
+            self._lbl_last_key.setText(f'Last:  {KEY_NAMES.get(keycode, "?")}')
 
     def _send_proceed(self, p):
         if self._socket.state() == QTcpSocket.SocketState.ConnectedState:
             self._socket.write(self._form_packet(0o432, 0o20000) +
                                self._form_packet(0o32, 0o20000 if p else 0))
+            if p:
+                self._packets_tx += 1
+                self._update_packet_counts()
+                self._lbl_last_key.setText('Last:  PRO')
 
     def paintEvent(self, event):
         opt = QStyleOption()
@@ -359,8 +555,18 @@ class DSKY(QMainWindow):
             but.release()
 
 def main():
+    ap = argparse.ArgumentParser(description='Apollo DSKY emulator')
+    ap.add_argument('--host', default='localhost', help='yaAGC host (default: localhost)')
+    ap.add_argument('--port', type=int, default=19697, help='yaAGC port (default: 19697)')
+    ap.add_argument('--vehicle', choices=['CM', 'LM', 'cm', 'lm'], default=None,
+                    help='Vehicle designation (default: auto-detect from port)')
+    ap.add_argument('--software', default=None,
+                    help='AGC software name (default: inferred from vehicle)')
+    args = ap.parse_args()
+
     app = QApplication(sys.argv)
-    window = DSKY(None)
+    window = DSKY(None, host=args.host, port=args.port,
+                  vehicle=args.vehicle, software=args.software)
     window.show()
     app.exec()
 
