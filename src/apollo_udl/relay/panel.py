@@ -40,10 +40,13 @@ class RelayPanel(QMainWindow):
     Polls ``relay.status()`` every 200 ms and drains the event buffer
     to update vehicle indicators, ground-client lights, packet counters,
     and the activity log.
+
+    Each vehicle has an independent downlink enable toggle (click to
+    toggle on/off).  A separate rotary knob selects the uplink target.
     """
 
     PANEL_WIDTH = 660
-    PANEL_HEIGHT = 540
+    PANEL_HEIGHT = 560
 
     def __init__(self, relay, parent=None):
         super().__init__(parent)
@@ -89,42 +92,48 @@ class RelayPanel(QMainWindow):
         row = QHBoxLayout()
         row.setSpacing(16)
 
-        self._cm_indicator = IndicatorLight(color=IndicatorColor.RED, diameter=14)
+        # CM frame
+        self._cm_conn_ind = IndicatorLight(color=IndicatorColor.RED, diameter=14)
+        self._cm_enable_ind = IndicatorLight(color=IndicatorColor.GREEN, diameter=12)
+        self._cm_enable_ind.set_on(True)
+        self._cm_enable_ind.clicked.connect(lambda: self._toggle_vehicle("CM"))
+        self._cm_enable_lbl = QLabel("ENABLED")
         self._cm_status_lbl = QLabel("DISCONNECTED")
         self._cm_addr_lbl = QLabel("")
         self._cm_rx_lbl = QLabel("RX: 0")
         self._cm_tx_lbl = QLabel("TX: 0")
         cm_frame = self._make_vehicle_frame(
-            "CM",
-            CM_ACCENT,
-            self._cm_indicator,
-            self._cm_status_lbl,
-            self._cm_addr_lbl,
-            self._cm_rx_lbl,
-            self._cm_tx_lbl,
+            "CM", CM_ACCENT,
+            self._cm_conn_ind, self._cm_enable_ind, self._cm_enable_lbl,
+            self._cm_status_lbl, self._cm_addr_lbl, self._cm_rx_lbl, self._cm_tx_lbl,
         )
         row.addWidget(cm_frame)
 
-        self._lm_indicator = IndicatorLight(color=IndicatorColor.RED, diameter=14)
+        # LM frame
+        self._lm_conn_ind = IndicatorLight(color=IndicatorColor.RED, diameter=14)
+        self._lm_enable_ind = IndicatorLight(color=IndicatorColor.GREEN, diameter=12)
+        self._lm_enable_ind.set_on(True)
+        self._lm_enable_ind.clicked.connect(lambda: self._toggle_vehicle("LM"))
+        self._lm_enable_lbl = QLabel("ENABLED")
         self._lm_status_lbl = QLabel("DISCONNECTED")
         self._lm_addr_lbl = QLabel("")
         self._lm_rx_lbl = QLabel("RX: 0")
         self._lm_tx_lbl = QLabel("TX: 0")
         lm_frame = self._make_vehicle_frame(
-            "LM",
-            LM_ACCENT,
-            self._lm_indicator,
-            self._lm_status_lbl,
-            self._lm_addr_lbl,
-            self._lm_rx_lbl,
-            self._lm_tx_lbl,
+            "LM", LM_ACCENT,
+            self._lm_conn_ind, self._lm_enable_ind, self._lm_enable_lbl,
+            self._lm_status_lbl, self._lm_addr_lbl, self._lm_rx_lbl, self._lm_tx_lbl,
         )
         row.addWidget(lm_frame)
 
         self._root.addLayout(row)
         self._root.addSpacing(14)
 
-    def _make_vehicle_frame(self, label, accent, indicator, status_lbl, addr_lbl, rx_lbl, tx_lbl):
+    def _make_vehicle_frame(
+        self, label, accent,
+        conn_ind, enable_ind, enable_lbl,
+        status_lbl, addr_lbl, rx_lbl, tx_lbl,
+    ):
         frame = QFrame()
         frame.setStyleSheet(
             f"QFrame{{background-color:{FRAME_BG};"
@@ -135,9 +144,9 @@ class RelayPanel(QMainWindow):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(4)
 
-        # Header row: indicator + vehicle name
+        # Header row: connection indicator + vehicle name + status
         header = QHBoxLayout()
-        header.addWidget(indicator)
+        header.addWidget(conn_ind)
         header.addSpacing(4)
 
         name_lbl = QLabel(label)
@@ -151,11 +160,24 @@ class RelayPanel(QMainWindow):
         header.addWidget(status_lbl)
         layout.addLayout(header)
 
-        # Address
+        # Enable toggle row: clickable indicator + label
+        enable_row = QHBoxLayout()
+        enable_row.addWidget(enable_ind)
+        enable_row.addSpacing(4)
+        enable_lbl.setStyleSheet(
+            "color:#66CC66; font-size:9px; font-family:monospace;"
+            "font-weight:bold; border:none;"
+        )
+        enable_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        enable_ind.setCursor(Qt.CursorShape.PointingHandCursor)
+        enable_row.addWidget(enable_lbl)
+        enable_row.addStretch()
+
         addr_lbl.setStyleSheet(
             f"color:{DIM_COLOR}; font-size:10px; font-family:monospace; border:none;"
         )
-        layout.addWidget(addr_lbl)
+        enable_row.addWidget(addr_lbl)
+        layout.addLayout(enable_row)
 
         # Packet counts
         counts = QHBoxLayout()
@@ -173,35 +195,35 @@ class RelayPanel(QMainWindow):
 
         return frame
 
-    # ── controls row: vehicle selector + ground clients ───────
+    # ── controls row: uplink target + ground clients ──────────
 
     def _build_controls_row(self):
         row = QHBoxLayout()
         row.setSpacing(20)
 
-        # Vehicle selector
-        sel_frame = QFrame()
-        sel_frame.setStyleSheet(
+        # Uplink target selector
+        upl_frame = QFrame()
+        upl_frame.setStyleSheet(
             f"QFrame{{background-color:{FRAME_BG};"
             "border:1px solid #3a3a3e; border-radius:3px;}}"
         )
-        sel_layout = QVBoxLayout(sel_frame)
-        sel_layout.setContentsMargins(12, 8, 12, 8)
-        sel_layout.setSpacing(6)
+        upl_layout = QVBoxLayout(upl_frame)
+        upl_layout.setContentsMargins(12, 8, 12, 8)
+        upl_layout.setSpacing(6)
 
-        sel_header = self._make_section_header("VEHICLE SELECT")
-        sel_header.setStyleSheet(sel_header.styleSheet() + " border:none;")
-        sel_layout.addWidget(sel_header)
+        upl_header = self._make_section_header("UPLINK TARGET")
+        upl_header.setStyleSheet(upl_header.styleSheet() + " border:none;")
+        upl_layout.addWidget(upl_header)
 
         self._knob = RotaryKnob(positions=["CM", "LM"], diameter=56)
-        self._knob.rotated.connect(self._on_vehicle_select)
+        self._knob.rotated.connect(self._on_uplink_select)
         knob_row = QHBoxLayout()
         knob_row.addStretch()
         knob_row.addWidget(self._knob)
         knob_row.addStretch()
-        sel_layout.addLayout(knob_row)
+        upl_layout.addLayout(knob_row)
 
-        row.addWidget(sel_frame)
+        row.addWidget(upl_frame)
 
         # Ground clients
         gc_frame = QFrame()
@@ -280,7 +302,9 @@ class RelayPanel(QMainWindow):
         cm = s["cm"]
         self._update_vehicle(
             cm,
-            self._cm_indicator,
+            self._cm_conn_ind,
+            self._cm_enable_ind,
+            self._cm_enable_lbl,
             self._cm_status_lbl,
             self._cm_addr_lbl,
             self._cm_rx_lbl,
@@ -291,7 +315,9 @@ class RelayPanel(QMainWindow):
         lm = s["lm"]
         self._update_vehicle(
             lm,
-            self._lm_indicator,
+            self._lm_conn_ind,
+            self._lm_enable_ind,
+            self._lm_enable_lbl,
             self._lm_status_lbl,
             self._lm_addr_lbl,
             self._lm_rx_lbl,
@@ -317,7 +343,7 @@ class RelayPanel(QMainWindow):
             cursor = QTextCursor(doc.begin())
             cursor.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
             cursor.removeSelectedText()
-            cursor.deleteChar()  # remove the trailing newline
+            cursor.deleteChar()
 
         # Auto-scroll
         cursor = self._log.textCursor()
@@ -325,30 +351,62 @@ class RelayPanel(QMainWindow):
         self._log.setTextCursor(cursor)
 
     @staticmethod
-    def _update_vehicle(vdata, indicator, status_lbl, addr_lbl, rx_lbl, tx_lbl):
+    def _update_vehicle(
+        vdata, conn_ind, enable_ind, enable_lbl,
+        status_lbl, addr_lbl, rx_lbl, tx_lbl,
+    ):
+        # Connection indicator (read-only)
         if vdata["connected"]:
-            indicator.set_color(IndicatorColor.GREEN)
-            indicator.set_on(True)
+            conn_ind.set_color(IndicatorColor.GREEN)
+            conn_ind.set_on(True)
             status_lbl.setText("CONNECTED")
             status_lbl.setStyleSheet(
                 "color:#66CC66; font-size:10px; font-family:monospace; border:none;"
             )
         else:
-            indicator.set_color(IndicatorColor.RED)
-            indicator.set_on(True)
+            conn_ind.set_color(IndicatorColor.RED)
+            conn_ind.set_on(True)
             status_lbl.setText("DISCONNECTED")
             status_lbl.setStyleSheet(
                 f"color:{DIM_COLOR}; font-size:10px; font-family:monospace; border:none;"
             )
+
+        # Enable toggle (reflects server state)
+        if vdata["enabled"]:
+            enable_ind.set_color(IndicatorColor.GREEN)
+            enable_ind.set_on(True)
+            enable_lbl.setText("ENABLED")
+            enable_lbl.setStyleSheet(
+                "color:#66CC66; font-size:9px; font-family:monospace;"
+                "font-weight:bold; border:none;"
+            )
+        else:
+            enable_ind.set_on(False)
+            enable_lbl.setText("DISABLED")
+            enable_lbl.setStyleSheet(
+                f"color:{DIM_COLOR}; font-size:9px; font-family:monospace;"
+                "font-weight:bold; border:none;"
+            )
+
         addr_lbl.setText(f'{vdata["host"]}:{vdata["port"]}')
         rx_lbl.setText(f'RX: {vdata["rx"]:,}')
         tx_lbl.setText(f'TX: {vdata["tx"]:,}')
 
-    # ── vehicle selector ──────────────────────────────────────
+    # ── vehicle enable toggles ────────────────────────────────
 
-    def _on_vehicle_select(self, position):
+    def _toggle_vehicle(self, name):
+        s = self._relay.status()
+        vdata = s["cm"] if name == "CM" else s["lm"]
+        if vdata["enabled"]:
+            self._relay.disable_vehicle(name)
+        else:
+            self._relay.enable_vehicle(name)
+
+    # ── uplink target selector ────────────────────────────────
+
+    def _on_uplink_select(self, position):
         vehicle = "CM" if position == 0 else "LM"
-        self._relay.select_vehicle(vehicle)
+        self._relay.set_uplink_target(vehicle)
 
     # ── helpers ───────────────────────────────────────────────
 

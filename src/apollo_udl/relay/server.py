@@ -3,14 +3,22 @@
 Threading model
 ---------------
 - The asyncio event loop runs in a daemon thread.
-- ``_on_vehicle_data``, ``_handle_ground_client``, and ``_do_select_vehicle``
-  all execute on the asyncio loop and are cooperatively serialized.
+- ``_on_vehicle_data``, ``_handle_ground_client``, and all ``_do_*`` methods
+  execute on the asyncio loop and are cooperatively serialized.
 - ``status()`` and ``drain_events()`` are called from the Qt main thread.
   They read simple attributes (bool/int/str) which are atomic under CPython's
   GIL.  The returned dict is an *approximate* snapshot -- values may reflect
   different moments within a single polling cycle.
-- ``select_vehicle()`` is called from the Qt main thread.  It schedules the
-  actual mutation on the asyncio loop via ``call_soon_threadsafe``.
+- ``enable_vehicle()``, ``disable_vehicle()``, and ``set_uplink_target()``
+  are called from the Qt main thread.  They schedule the actual mutation on
+  the asyncio loop via ``call_soon_threadsafe``.
+
+Routing model
+-------------
+- **Downlink** (yaAGC → ground): data from each *enabled* vehicle is broadcast
+  to all ground clients.  Vehicles can be independently toggled on/off.
+- **Uplink** (ground → yaAGC): data from ground clients is forwarded only to the
+  designated *uplink target* vehicle.
 """
 
 import asyncio
@@ -48,7 +56,9 @@ class RelayServer:
         relay_port=DEFAULT_RELAY_PORT,
     ):
         self._relay_port = relay_port
-        self._active_vehicle = "CM"
+        self._uplink_target = "CM"
+        self._cm_enabled = True
+        self._lm_enabled = True
         self._total_routed = 0
         self._ground_writers = set()
         self._ground_client_count = 0
@@ -86,6 +96,7 @@ class RelayServer:
         return {
             "cm": {
                 "connected": self._cm.connected,
+                "enabled": self._cm_enabled,
                 "host": self._cm.host,
                 "port": self._cm.port,
                 "rx": self._cm.rx_count,
@@ -93,23 +104,34 @@ class RelayServer:
             },
             "lm": {
                 "connected": self._lm.connected,
+                "enabled": self._lm_enabled,
                 "host": self._lm.host,
                 "port": self._lm.port,
                 "rx": self._lm.rx_count,
                 "tx": self._lm.tx_count,
             },
-            "active_vehicle": self._active_vehicle,
+            "uplink_target": self._uplink_target,
             "ground_clients": self._ground_client_count,
             "total_routed": self._total_routed,
         }
 
-    def select_vehicle(self, name):
-        """Switch active vehicle.  Thread-safe: schedules on the asyncio loop."""
+    def enable_vehicle(self, name):
+        """Enable a vehicle's downlink.  Thread-safe."""
         name = name.upper()
-        if name not in self._vehicles:
-            return
-        if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._do_select_vehicle, name)
+        if name in self._vehicles and self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._do_enable_vehicle, name)
+
+    def disable_vehicle(self, name):
+        """Disable a vehicle's downlink.  Thread-safe."""
+        name = name.upper()
+        if name in self._vehicles and self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._do_disable_vehicle, name)
+
+    def set_uplink_target(self, name):
+        """Set the uplink target vehicle.  Thread-safe."""
+        name = name.upper()
+        if name in self._vehicles and self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._do_set_uplink_target, name)
 
     def drain_events(self):
         """Pop all queued events.  Thread-safe (deque ops are atomic in CPython)."""
@@ -146,14 +168,19 @@ class RelayServer:
     def _on_vehicle_disconnected(self, name):
         self._emit(f"{name} disconnected from yaAGC")
 
+    def _is_vehicle_enabled(self, name):
+        if name == "CM":
+            return self._cm_enabled
+        return self._lm_enabled
+
     def _on_vehicle_data(self, name, data):
-        """Forward data from the active vehicle to all ground clients.
+        """Forward data from enabled vehicles to all ground clients.
 
         Called synchronously from VehicleConnection._read_loop on the
         asyncio thread.  ground_writers is only mutated on this same
         thread (cooperatively serialized), so iteration is safe.
         """
-        if name != self._active_vehicle:
+        if not self._is_vehicle_enabled(name):
             return
         stale = []
         for writer in list(self._ground_writers):
@@ -173,12 +200,27 @@ class RelayServer:
             self._ground_client_count = len(self._ground_writers)
         self._total_routed += len(data) // 4
 
-    def _do_select_vehicle(self, name):
-        """Perform vehicle switch on the asyncio thread."""
-        old = self._active_vehicle
+    def _do_enable_vehicle(self, name):
+        if name == "CM" and not self._cm_enabled:
+            self._cm_enabled = True
+            self._emit(f"{name} downlink enabled")
+        elif name == "LM" and not self._lm_enabled:
+            self._lm_enabled = True
+            self._emit(f"{name} downlink enabled")
+
+    def _do_disable_vehicle(self, name):
+        if name == "CM" and self._cm_enabled:
+            self._cm_enabled = False
+            self._emit(f"{name} downlink disabled")
+        elif name == "LM" and self._lm_enabled:
+            self._lm_enabled = False
+            self._emit(f"{name} downlink disabled")
+
+    def _do_set_uplink_target(self, name):
+        old = self._uplink_target
         if old != name:
-            self._active_vehicle = name
-            self._emit(f"Vehicle select: {old} \u2192 {name}")
+            self._uplink_target = name
+            self._emit(f"Uplink target: {old} \u2192 {name}")
 
     # ── ground client handling (asyncio thread) ───────────────
 
@@ -196,7 +238,7 @@ class RelayServer:
                 data = await reader.read(4096)
                 if not data:
                     break
-                vehicle = self._vehicles.get(self._active_vehicle)
+                vehicle = self._vehicles.get(self._uplink_target)
                 if vehicle and vehicle.connected:
                     vehicle.send(data)
                     self._total_routed += len(data) // 4
