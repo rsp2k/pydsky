@@ -20,13 +20,14 @@ pyside6 = ["PySide6>=6.0"]
 [project.scripts]
 pydsky = "pydsky.app:main"
 pydsky-uplink = "pydsky.uplink:main"
+apollo-udl-relay = "apollo_udl.relay.app:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pydsky"]
+packages = ["src/pydsky", "src/apollo_udl"]
 
 [tool.ruff]
 line-length = 120
