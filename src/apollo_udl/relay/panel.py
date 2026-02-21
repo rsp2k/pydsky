@@ -17,6 +17,7 @@ from qtpy.QtCore import Qt, QTimer
 
 from ..testset.indicator import IndicatorLight, IndicatorColor
 from ..testset.switches import RotaryKnob
+from .server import FILTER_ALL, FILTER_CM, FILTER_LM, FILTER_CYCLE, MAX_GROUND_CLIENTS
 
 # ── design tokens ─────────────────────────────────────────────
 
@@ -29,6 +30,13 @@ HEADER_COLOR = "#888"
 DATA_COLOR = "#DDD"
 DIM_COLOR = "#666"
 DIVIDER_COLOR = "#444"
+
+# Filter → indicator color mapping
+FILTER_COLORS = {
+    FILTER_ALL: IndicatorColor.AMBER,
+    FILTER_CM: IndicatorColor.BLUE,
+    FILTER_LM: IndicatorColor.GOLD,
+}
 
 POLL_INTERVAL_MS = 200
 MAX_LOG_LINES = 500
@@ -225,7 +233,7 @@ class RelayPanel(QMainWindow):
 
         row.addWidget(upl_frame)
 
-        # Ground clients
+        # Ground clients (filter-aware interactive slots)
         gc_frame = QFrame()
         gc_frame.setStyleSheet(
             f"QFrame{{background-color:{FRAME_BG};"
@@ -240,10 +248,15 @@ class RelayPanel(QMainWindow):
         gc_layout.addWidget(gc_header)
 
         self._gc_indicators = []
+        self._gc_filter_lbls = []
+        self._gc_cids = [None] * MAX_GROUND_CLIENTS
         grid = QGridLayout()
         grid.setSpacing(6)
-        for i in range(6):
+        for i in range(MAX_GROUND_CLIENTS):
             indicator = IndicatorLight(color=IndicatorColor.AMBER, diameter=14)
+            indicator.setCursor(Qt.CursorShape.PointingHandCursor)
+            slot = i  # capture for lambda
+            indicator.clicked.connect(lambda s=slot: self._cycle_client_filter(s))
             grid.addWidget(indicator, 0, i, Qt.AlignmentFlag.AlignCenter)
             self._gc_indicators.append(indicator)
             num = QLabel(str(i + 1))
@@ -252,6 +265,13 @@ class RelayPanel(QMainWindow):
                 f"color:{DIM_COLOR}; font-size:9px; font-family:monospace; border:none;"
             )
             grid.addWidget(num, 1, i, Qt.AlignmentFlag.AlignCenter)
+            filt_lbl = QLabel("")
+            filt_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            filt_lbl.setStyleSheet(
+                f"color:{DIM_COLOR}; font-size:8px; font-family:monospace; border:none;"
+            )
+            grid.addWidget(filt_lbl, 2, i, Qt.AlignmentFlag.AlignCenter)
+            self._gc_filter_lbls.append(filt_lbl)
         gc_layout.addLayout(grid)
         gc_layout.addStretch()
 
@@ -324,10 +344,24 @@ class RelayPanel(QMainWindow):
             self._lm_tx_lbl,
         )
 
-        # Ground clients
-        gc_count = s["ground_clients"]
-        for i, ind in enumerate(self._gc_indicators):
-            ind.set_on(i < gc_count)
+        # Ground clients -- map server client list to panel slots
+        clients = s["ground_clients"]
+        self._gc_cids = [None] * MAX_GROUND_CLIENTS
+        for i in range(MAX_GROUND_CLIENTS):
+            if i < len(clients):
+                c = clients[i]
+                self._gc_cids[i] = c["cid"]
+                filt = c["filter"]
+                self._gc_indicators[i].set_color(FILTER_COLORS.get(filt, IndicatorColor.AMBER))
+                self._gc_indicators[i].set_on(True)
+                self._gc_filter_lbls[i].setText(filt)
+                color = CM_ACCENT if filt == FILTER_CM else LM_ACCENT if filt == FILTER_LM else DATA_COLOR
+                self._gc_filter_lbls[i].setStyleSheet(
+                    f"color:{color}; font-size:8px; font-family:monospace; border:none;"
+                )
+            else:
+                self._gc_indicators[i].set_on(False)
+                self._gc_filter_lbls[i].setText("")
 
         # Packet counter
         self._routed_lbl.setText(f'{s["total_routed"]:,}')
@@ -407,6 +441,22 @@ class RelayPanel(QMainWindow):
     def _on_uplink_select(self, position):
         vehicle = "CM" if position == 0 else "LM"
         self._relay.set_uplink_target(vehicle)
+
+    # ── ground client filter cycling ─────────────────────────
+
+    def _cycle_client_filter(self, slot):
+        cid = self._gc_cids[slot] if slot < len(self._gc_cids) else None
+        if cid is None:
+            return
+        # Find current filter from the last status snapshot
+        s = self._relay.status()
+        for c in s["ground_clients"]:
+            if c["cid"] == cid:
+                cur = c["filter"]
+                idx = FILTER_CYCLE.index(cur) if cur in FILTER_CYCLE else 0
+                nxt = FILTER_CYCLE[(idx + 1) % len(FILTER_CYCLE)]
+                self._relay.set_client_filter(cid, nxt)
+                break
 
     # ── helpers ───────────────────────────────────────────────
 

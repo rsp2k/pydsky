@@ -12,7 +12,12 @@ import threading
 
 from qtpy.QtWidgets import QApplication
 
-from .server import RelayServer, DEFAULT_CM_PORT, DEFAULT_LM_PORT, DEFAULT_RELAY_PORT
+from .server import (
+    RelayServer,
+    DEFAULT_CM_PORT,
+    DEFAULT_LM_PORT,
+    DEFAULT_RELAY_PORT,
+)
 from .panel import RelayPanel
 
 
@@ -49,7 +54,10 @@ def main():
         "--port",
         type=_valid_port,
         default=DEFAULT_RELAY_PORT,
-        help=f"Relay listen port for ground clients (default: {DEFAULT_RELAY_PORT})",
+        help=(
+            f"Base relay port (default: {DEFAULT_RELAY_PORT}). "
+            f"Listens on PORT (ALL), PORT+1 (CM only), PORT+2 (LM only)"
+        ),
     )
     ap.add_argument(
         "--verbose", "-v", action="store_true", help="Enable debug logging"

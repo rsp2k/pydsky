@@ -9,16 +9,24 @@ Threading model
   They read simple attributes (bool/int/str) which are atomic under CPython's
   GIL.  The returned dict is an *approximate* snapshot -- values may reflect
   different moments within a single polling cycle.
-- ``enable_vehicle()``, ``disable_vehicle()``, and ``set_uplink_target()``
-  are called from the Qt main thread.  They schedule the actual mutation on
-  the asyncio loop via ``call_soon_threadsafe``.
+- ``enable_vehicle()``, ``disable_vehicle()``, ``set_uplink_target()``, and
+  ``set_client_filter()`` are called from the Qt main thread.  They schedule
+  the actual mutation on the asyncio loop via ``call_soon_threadsafe``.
 
 Routing model
 -------------
 - **Downlink** (yaAGC → ground): data from each *enabled* vehicle is broadcast
-  to all ground clients.  Vehicles can be independently toggled on/off.
+  to ground clients whose per-client filter permits it.  The global vehicle
+  enable toggles are checked first; then the per-client filter is applied.
 - **Uplink** (ground → yaAGC): data from ground clients is forwarded only to the
   designated *uplink target* vehicle.
+- **Per-client filtering**: three relay ports assign default filters:
+
+  - Base port (19900): ALL -- receives both CM and LM data
+  - Base+1 (19901):    CM  -- receives CM data only
+  - Base+2 (19902):    LM  -- receives LM data only
+
+  The operator can override any client's filter from the panel.
 """
 
 import asyncio
@@ -34,8 +42,16 @@ DEFAULT_RELAY_PORT = 19900
 DEFAULT_CM_PORT = 19697
 DEFAULT_LM_PORT = 19797
 
+# Per-client downlink filter values
+FILTER_ALL = "ALL"
+FILTER_CM = "CM"
+FILTER_LM = "LM"
+FILTER_CYCLE = [FILTER_ALL, FILTER_CM, FILTER_LM]
+
 # Drop ground clients whose write buffer exceeds this (64 KB)
 WRITE_BUFFER_LIMIT = 64 * 1024
+
+MAX_GROUND_CLIENTS = 6
 
 
 class RelayServer:
@@ -60,8 +76,10 @@ class RelayServer:
         self._cm_enabled = True
         self._lm_enabled = True
         self._total_routed = 0
-        self._ground_writers = set()
-        self._ground_client_count = 0
+
+        # Per-client tracking: cid → {writer, filter, addr}
+        # Mutated only on the asyncio thread.
+        self._ground_clients = {}
         self._next_client_id = 1
         self._events = deque(maxlen=200)
         self._loop = None
@@ -92,7 +110,16 @@ class RelayServer:
         Safe to call from any thread.  Individual attribute reads are
         atomic under CPython's GIL, but the returned dict may reflect
         values from slightly different points in time.
+
+        ``ground_clients`` is a list of dicts (one per connected client)
+        with keys: ``cid``, ``filter``, ``addr``.
         """
+        # Snapshot the dict to avoid RuntimeError from concurrent mutation
+        # on the asyncio thread (dict.items() returns a lazy view).
+        clients = [
+            {"cid": cid, "filter": info["filter"], "addr": info["addr"]}
+            for cid, info in list(self._ground_clients.items())
+        ]
         return {
             "cm": {
                 "connected": self._cm.connected,
@@ -111,7 +138,7 @@ class RelayServer:
                 "tx": self._lm.tx_count,
             },
             "uplink_target": self._uplink_target,
-            "ground_clients": self._ground_client_count,
+            "ground_clients": clients,
             "total_routed": self._total_routed,
         }
 
@@ -133,6 +160,13 @@ class RelayServer:
         if name in self._vehicles and self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._do_set_uplink_target, name)
 
+    def set_client_filter(self, cid, vehicle_filter):
+        """Set a ground client's downlink filter.  Thread-safe."""
+        if vehicle_filter in FILTER_CYCLE and self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(
+                self._do_set_client_filter, cid, vehicle_filter
+            )
+
     def drain_events(self):
         """Pop all queued events.  Thread-safe (deque ops are atomic in CPython)."""
         events = []
@@ -146,19 +180,38 @@ class RelayServer:
     # ── asyncio entry point ───────────────────────────────────
 
     async def run(self):
-        """Start vehicle connections and ground-client server.  Blocks forever."""
+        """Start vehicle connections and ground-client servers.  Blocks forever."""
         self._loop = asyncio.get_running_loop()
 
-        server = await asyncio.start_server(
-            self._handle_ground_client, "0.0.0.0", self._relay_port
+        def _make_handler(default_filter):
+            async def handler(reader, writer):
+                await self._handle_ground_client(reader, writer, default_filter)
+            return handler
+
+        all_srv = await asyncio.start_server(
+            _make_handler(FILTER_ALL), "0.0.0.0", self._relay_port
         )
-        self._emit(f"Relay listening on port {self._relay_port}")
+        cm_srv = await asyncio.start_server(
+            _make_handler(FILTER_CM), "0.0.0.0", self._relay_port + 1
+        )
+        lm_srv = await asyncio.start_server(
+            _make_handler(FILTER_LM), "0.0.0.0", self._relay_port + 2
+        )
+        self._emit(
+            f"Relay listening: {self._relay_port} (ALL), "
+            f"{self._relay_port + 1} (CM), {self._relay_port + 2} (LM)"
+        )
 
         cm_task = asyncio.create_task(self._cm.run())
         lm_task = asyncio.create_task(self._lm.run())
 
-        async with server:
-            await asyncio.gather(cm_task, lm_task, server.serve_forever())
+        async with all_srv, cm_srv, lm_srv:
+            await asyncio.gather(
+                cm_task, lm_task,
+                all_srv.serve_forever(),
+                cm_srv.serve_forever(),
+                lm_srv.serve_forever(),
+            )
 
     # ── vehicle callbacks (asyncio thread) ────────────────────
 
@@ -174,31 +227,41 @@ class RelayServer:
         return self._lm_enabled
 
     def _on_vehicle_data(self, name, data):
-        """Forward data from enabled vehicles to all ground clients.
+        """Forward data from enabled vehicles to filtered ground clients.
 
         Called synchronously from VehicleConnection._read_loop on the
-        asyncio thread.  ground_writers is only mutated on this same
+        asyncio thread.  _ground_clients is only mutated on this same
         thread (cooperatively serialized), so iteration is safe.
+
+        Two-stage filter:
+        1. Global vehicle enable -- if the vehicle is disabled, nobody gets it.
+        2. Per-client filter -- ALL passes everything, CM/LM passes only that vehicle.
         """
         if not self._is_vehicle_enabled(name):
             return
         stale = []
-        for writer in list(self._ground_writers):
+        sent = False
+        for cid, info in list(self._ground_clients.items()):
+            # Per-client filter check
+            cf = info["filter"]
+            if cf != FILTER_ALL and cf != name:
+                continue
+            writer = info["writer"]
             try:
                 buf_size = writer.transport.get_write_buffer_size()
                 if buf_size > WRITE_BUFFER_LIMIT:
-                    log.warning("Ground client buffer overflow (%d bytes), dropping", buf_size)
-                    stale.append(writer)
+                    log.warning("Client #%d buffer overflow (%d bytes), dropping", cid, buf_size)
+                    stale.append(cid)
                     continue
                 writer.write(data)
+                sent = True
             except (ConnectionError, OSError) as exc:
-                log.debug("Ground client write failed: %s", exc)
-                stale.append(writer)
-        for w in stale:
-            self._ground_writers.discard(w)
-        if stale:
-            self._ground_client_count = len(self._ground_writers)
-        self._total_routed += len(data) // 4
+                log.debug("Client #%d write failed: %s", cid, exc)
+                stale.append(cid)
+        for cid in stale:
+            self._ground_clients.pop(cid, None)
+        if sent:
+            self._total_routed += len(data) // 4
 
     def _do_enable_vehicle(self, name):
         if name == "CM" and not self._cm_enabled:
@@ -222,16 +285,40 @@ class RelayServer:
             self._uplink_target = name
             self._emit(f"Uplink target: {old} \u2192 {name}")
 
+    def _do_set_client_filter(self, cid, vehicle_filter):
+        info = self._ground_clients.get(cid)
+        if info and info["filter"] != vehicle_filter:
+            old = info["filter"]
+            info["filter"] = vehicle_filter
+            self._emit(f"Client #{cid} filter: {old} \u2192 {vehicle_filter}")
+
     # ── ground client handling (asyncio thread) ───────────────
 
-    async def _handle_ground_client(self, reader, writer):
+    async def _handle_ground_client(self, reader, writer, default_filter):
         addr = writer.get_extra_info("peername") or ("unknown", 0)
+
+        if len(self._ground_clients) >= MAX_GROUND_CLIENTS:
+            log.warning("Max ground clients (%d) reached, rejecting %s:%s",
+                        MAX_GROUND_CLIENTS, addr[0], addr[1])
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except OSError:
+                pass
+            return
+
         cid = self._next_client_id
         self._next_client_id += 1
 
-        self._ground_writers.add(writer)
-        self._ground_client_count = len(self._ground_writers)
-        self._emit(f"Ground client #{cid} connected from {addr[0]}:{addr[1]}")
+        self._ground_clients[cid] = {
+            "writer": writer,
+            "filter": default_filter,
+            "addr": f"{addr[0]}:{addr[1]}",
+        }
+        self._emit(
+            f"Ground client #{cid} connected from {addr[0]}:{addr[1]} "
+            f"[filter: {default_filter}]"
+        )
 
         try:
             while True:
@@ -245,8 +332,7 @@ class RelayServer:
         except (ConnectionError, OSError):
             pass
         finally:
-            self._ground_writers.discard(writer)
-            self._ground_client_count = len(self._ground_writers)
+            self._ground_clients.pop(cid, None)
             try:
                 writer.close()
                 await writer.wait_closed()
