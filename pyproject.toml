@@ -20,6 +20,7 @@ pyside6 = ["PySide6>=6.0"]
 [project.scripts]
 pydsky = "pydsky.app:main"
 pydsky-uplink = "pydsky.uplink:main"
+pydsky-datacards = "pydsky.datacards.app:main"
 apollo-udl-relay = "apollo_udl.relay.app:main"
 
 [build-system]
