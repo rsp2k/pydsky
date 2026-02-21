@@ -17,7 +17,7 @@ from qtpy.QtCore import Qt, QTimer
 
 from ..testset.indicator import IndicatorLight, IndicatorColor
 from ..testset.switches import RotaryKnob
-from .server import FILTER_ALL, FILTER_CM, FILTER_LM, FILTER_CYCLE, MAX_GROUND_CLIENTS
+from .server import FILTER_CM, FILTER_LM, FILTER_CYCLE, MAX_GROUND_CLIENTS
 
 # ── design tokens ─────────────────────────────────────────────
 
@@ -31,9 +31,8 @@ DATA_COLOR = "#DDD"
 DIM_COLOR = "#666"
 DIVIDER_COLOR = "#444"
 
-# Filter → indicator color mapping
+# Filter → indicator color mapping (CM = blue, LM = gold, matching vehicle accents)
 FILTER_COLORS = {
-    FILTER_ALL: IndicatorColor.AMBER,
     FILTER_CM: IndicatorColor.BLUE,
     FILTER_LM: IndicatorColor.GOLD,
 }
@@ -253,7 +252,7 @@ class RelayPanel(QMainWindow):
         grid = QGridLayout()
         grid.setSpacing(6)
         for i in range(MAX_GROUND_CLIENTS):
-            indicator = IndicatorLight(color=IndicatorColor.AMBER, diameter=14)
+            indicator = IndicatorLight(color=IndicatorColor.BLUE, diameter=14)
             indicator.setCursor(Qt.CursorShape.PointingHandCursor)
             slot = i  # capture for lambda
             indicator.clicked.connect(lambda s=slot: self._cycle_client_filter(s))
@@ -352,10 +351,10 @@ class RelayPanel(QMainWindow):
                 c = clients[i]
                 self._gc_cids[i] = c["cid"]
                 filt = c["filter"]
-                self._gc_indicators[i].set_color(FILTER_COLORS.get(filt, IndicatorColor.AMBER))
+                self._gc_indicators[i].set_color(FILTER_COLORS.get(filt, IndicatorColor.BLUE))
                 self._gc_indicators[i].set_on(True)
                 self._gc_filter_lbls[i].setText(filt)
-                color = CM_ACCENT if filt == FILTER_CM else LM_ACCENT if filt == FILTER_LM else DATA_COLOR
+                color = CM_ACCENT if filt == FILTER_CM else LM_ACCENT
                 self._gc_filter_lbls[i].setStyleSheet(
                     f"color:{color}; font-size:8px; font-family:monospace; border:none;"
                 )

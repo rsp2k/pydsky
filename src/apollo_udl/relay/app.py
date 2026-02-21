@@ -56,7 +56,7 @@ def main():
         default=DEFAULT_RELAY_PORT,
         help=(
             f"Base relay port (default: {DEFAULT_RELAY_PORT}). "
-            f"Listens on PORT (ALL), PORT+1 (CM only), PORT+2 (LM only)"
+            f"Listens on PORT (CM), PORT+1 (LM)"
         ),
     )
     ap.add_argument(

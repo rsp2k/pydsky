@@ -15,18 +15,22 @@ Threading model
 
 Routing model
 -------------
-- **Downlink** (yaAGC → ground): data from each *enabled* vehicle is broadcast
-  to ground clients whose per-client filter permits it.  The global vehicle
-  enable toggles are checked first; then the per-client filter is applied.
+Mirrors the real MSFN ground network: separate feeds per vehicle, just like
+separate S-band ground stations at Goldstone/Madrid/Canberra.
+
+- **Downlink** (yaAGC → ground): two relay ports, one per vehicle.  Each port
+  carries only its vehicle's data -- CM and LM never share a wire, just as they
+  never shared an RF link.  The global vehicle enable toggles are checked first;
+  then the per-client filter is applied.
 - **Uplink** (ground → yaAGC): data from ground clients is forwarded only to the
   designated *uplink target* vehicle.
-- **Per-client filtering**: three relay ports assign default filters:
+- **Per-client filtering**: two relay ports assign default filters:
 
-  - Base port (19900): ALL -- receives both CM and LM data
-  - Base+1 (19901):    CM  -- receives CM data only
-  - Base+2 (19902):    LM  -- receives LM data only
+  - Base port (19900): CM  -- CM ground station feed
+  - Base+1 (19901):    LM  -- LM ground station feed
 
-  The operator can override any client's filter from the panel.
+  The operator can override any client's filter from the panel, analogous to
+  switching console inputs in the MOCR.
 """
 
 import asyncio
@@ -42,11 +46,11 @@ DEFAULT_RELAY_PORT = 19900
 DEFAULT_CM_PORT = 19697
 DEFAULT_LM_PORT = 19797
 
-# Per-client downlink filter values
-FILTER_ALL = "ALL"
+# Per-client downlink filter values (no "ALL" -- CM and LM never shared
+# an RF link in the real MSFN, so we don't model a combined feed).
 FILTER_CM = "CM"
 FILTER_LM = "LM"
-FILTER_CYCLE = [FILTER_ALL, FILTER_CM, FILTER_LM]
+FILTER_CYCLE = [FILTER_CM, FILTER_LM]
 
 # Drop ground clients whose write buffer exceeds this (64 KB)
 WRITE_BUFFER_LIMIT = 64 * 1024
@@ -188,27 +192,23 @@ class RelayServer:
                 await self._handle_ground_client(reader, writer, default_filter)
             return handler
 
-        all_srv = await asyncio.start_server(
-            _make_handler(FILTER_ALL), "0.0.0.0", self._relay_port
-        )
         cm_srv = await asyncio.start_server(
-            _make_handler(FILTER_CM), "0.0.0.0", self._relay_port + 1
+            _make_handler(FILTER_CM), "0.0.0.0", self._relay_port
         )
         lm_srv = await asyncio.start_server(
-            _make_handler(FILTER_LM), "0.0.0.0", self._relay_port + 2
+            _make_handler(FILTER_LM), "0.0.0.0", self._relay_port + 1
         )
         self._emit(
-            f"Relay listening: {self._relay_port} (ALL), "
-            f"{self._relay_port + 1} (CM), {self._relay_port + 2} (LM)"
+            f"Relay listening: {self._relay_port} (CM), "
+            f"{self._relay_port + 1} (LM)"
         )
 
         cm_task = asyncio.create_task(self._cm.run())
         lm_task = asyncio.create_task(self._lm.run())
 
-        async with all_srv, cm_srv, lm_srv:
+        async with cm_srv, lm_srv:
             await asyncio.gather(
                 cm_task, lm_task,
-                all_srv.serve_forever(),
                 cm_srv.serve_forever(),
                 lm_srv.serve_forever(),
             )
@@ -235,7 +235,7 @@ class RelayServer:
 
         Two-stage filter:
         1. Global vehicle enable -- if the vehicle is disabled, nobody gets it.
-        2. Per-client filter -- ALL passes everything, CM/LM passes only that vehicle.
+        2. Per-client filter -- only clients tuned to this vehicle receive data.
         """
         if not self._is_vehicle_enabled(name):
             return
@@ -243,8 +243,7 @@ class RelayServer:
         sent = False
         for cid, info in list(self._ground_clients.items()):
             # Per-client filter check
-            cf = info["filter"]
-            if cf != FILTER_ALL and cf != name:
+            if info["filter"] != name:
                 continue
             writer = info["writer"]
             try:
