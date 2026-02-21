@@ -16,7 +16,6 @@ from qtpy.QtGui import QFont, QTextCursor
 from qtpy.QtCore import Qt, QTimer
 
 from ..testset.indicator import IndicatorLight, IndicatorColor
-from ..testset.switches import RotaryKnob
 from .server import FILTER_CM, FILTER_LM, FILTER_CYCLE, MAX_GROUND_CLIENTS
 
 # ── design tokens ─────────────────────────────────────────────
@@ -49,7 +48,8 @@ class RelayPanel(QMainWindow):
     and the activity log.
 
     Each vehicle has an independent downlink enable toggle (click to
-    toggle on/off).  A separate rotary knob selects the uplink target.
+    toggle on/off).  Uplink routing follows the per-client filter --
+    each client talks to the vehicle matching its port assignment.
     """
 
     PANEL_WIDTH = 660
@@ -202,35 +202,11 @@ class RelayPanel(QMainWindow):
 
         return frame
 
-    # ── controls row: uplink target + ground clients ──────────
+    # ── controls row: ground clients ────────────────────────────
 
     def _build_controls_row(self):
         row = QHBoxLayout()
         row.setSpacing(20)
-
-        # Uplink target selector
-        upl_frame = QFrame()
-        upl_frame.setStyleSheet(
-            f"QFrame{{background-color:{FRAME_BG};"
-            "border:1px solid #3a3a3e; border-radius:3px;}}"
-        )
-        upl_layout = QVBoxLayout(upl_frame)
-        upl_layout.setContentsMargins(12, 8, 12, 8)
-        upl_layout.setSpacing(6)
-
-        upl_header = self._make_section_header("UPLINK TARGET")
-        upl_header.setStyleSheet(upl_header.styleSheet() + " border:none;")
-        upl_layout.addWidget(upl_header)
-
-        self._knob = RotaryKnob(positions=["CM", "LM"], diameter=56)
-        self._knob.rotated.connect(self._on_uplink_select)
-        knob_row = QHBoxLayout()
-        knob_row.addStretch()
-        knob_row.addWidget(self._knob)
-        knob_row.addStretch()
-        upl_layout.addLayout(knob_row)
-
-        row.addWidget(upl_frame)
 
         # Ground clients (filter-aware interactive slots)
         gc_frame = QFrame()
@@ -434,12 +410,6 @@ class RelayPanel(QMainWindow):
             self._relay.disable_vehicle(name)
         else:
             self._relay.enable_vehicle(name)
-
-    # ── uplink target selector ────────────────────────────────
-
-    def _on_uplink_select(self, position):
-        vehicle = "CM" if position == 0 else "LM"
-        self._relay.set_uplink_target(vehicle)
 
     # ── ground client filter cycling ─────────────────────────
 

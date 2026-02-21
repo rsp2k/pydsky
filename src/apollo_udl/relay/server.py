@@ -9,9 +9,9 @@ Threading model
   They read simple attributes (bool/int/str) which are atomic under CPython's
   GIL.  The returned dict is an *approximate* snapshot -- values may reflect
   different moments within a single polling cycle.
-- ``enable_vehicle()``, ``disable_vehicle()``, ``set_uplink_target()``, and
-  ``set_client_filter()`` are called from the Qt main thread.  They schedule
-  the actual mutation on the asyncio loop via ``call_soon_threadsafe``.
+- ``enable_vehicle()``, ``disable_vehicle()``, and ``set_client_filter()``
+  are called from the Qt main thread.  They schedule the actual mutation on
+  the asyncio loop via ``call_soon_threadsafe``.
 
 Routing model
 -------------
@@ -22,8 +22,11 @@ separate S-band ground stations at Goldstone/Madrid/Canberra.
   carries only its vehicle's data -- CM and LM never share a wire, just as they
   never shared an RF link.  The global vehicle enable toggles are checked first;
   then the per-client filter is applied.
-- **Uplink** (ground → yaAGC): data from ground clients is forwarded only to the
-  designated *uplink target* vehicle.
+- **Uplink** (ground → yaAGC): data from ground clients is forwarded to the
+  vehicle matching their per-client filter.  A client on the CM port uplinks
+  to the CM AGC; a client on the LM port uplinks to the LM AGC.  No global
+  uplink selector -- the port determines the vehicle, matching how physical
+  ground hardware was wired to a specific spacecraft.
 - **Per-client filtering**: two relay ports assign default filters:
 
   - Base port (19900): CM  -- CM ground station feed
@@ -76,7 +79,6 @@ class RelayServer:
         relay_port=DEFAULT_RELAY_PORT,
     ):
         self._relay_port = relay_port
-        self._uplink_target = "CM"
         self._cm_enabled = True
         self._lm_enabled = True
         self._total_routed = 0
@@ -141,7 +143,6 @@ class RelayServer:
                 "rx": self._lm.rx_count,
                 "tx": self._lm.tx_count,
             },
-            "uplink_target": self._uplink_target,
             "ground_clients": clients,
             "total_routed": self._total_routed,
         }
@@ -157,12 +158,6 @@ class RelayServer:
         name = name.upper()
         if name in self._vehicles and self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._do_disable_vehicle, name)
-
-    def set_uplink_target(self, name):
-        """Set the uplink target vehicle.  Thread-safe."""
-        name = name.upper()
-        if name in self._vehicles and self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._do_set_uplink_target, name)
 
     def set_client_filter(self, cid, vehicle_filter):
         """Set a ground client's downlink filter.  Thread-safe."""
@@ -278,12 +273,6 @@ class RelayServer:
             self._lm_enabled = False
             self._emit(f"{name} downlink disabled")
 
-    def _do_set_uplink_target(self, name):
-        old = self._uplink_target
-        if old != name:
-            self._uplink_target = name
-            self._emit(f"Uplink target: {old} \u2192 {name}")
-
     def _do_set_client_filter(self, cid, vehicle_filter):
         info = self._ground_clients.get(cid)
         if info and info["filter"] != vehicle_filter:
@@ -324,10 +313,14 @@ class RelayServer:
                 data = await reader.read(4096)
                 if not data:
                     break
-                vehicle = self._vehicles.get(self._uplink_target)
-                if vehicle and vehicle.connected:
-                    vehicle.send(data)
-                    self._total_routed += len(data) // 4
+                # Uplink goes to the vehicle matching this client's filter,
+                # just as physical ground equipment was wired to one spacecraft.
+                info = self._ground_clients.get(cid)
+                if info:
+                    vehicle = self._vehicles.get(info["filter"])
+                    if vehicle and vehicle.connected:
+                        vehicle.send(data)
+                        self._total_routed += len(data) // 4
         except (ConnectionError, OSError):
             pass
         finally:
